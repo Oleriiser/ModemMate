@@ -1,0 +1,35 @@
+Altium Designer Pick and Place Locations
+C:\Users\Public\Documents\Altium\output\=ProjectName+'_prod_doc_rev'+ProjectRevision\Pick Place for ModemMate(Default).csv
+
+========================================================================================================================
+File Design Information:
+
+Date:       23.11.25
+Time:       17:50
+Revision:   aacef935920e8754f53aca3c6887e1a73aa728ef
+Variant:    Default
+Units used: mm
+
+"Designator","Comment","Layer","Footprint","Center-X(mm)","Center-Y(mm)","Rotation","Description"
+"B3","M3 inside minimum","TopLayer","M3_minimum","45.8000","45.9000","0","smaller M3 mounting holde for inside the PCB. should not be used for nuts(tools will not fit)"
+"B2","M3 inside minimum","TopLayer","M3_minimum","45.8000","6.0000","0","smaller M3 mounting holde for inside the PCB. should not be used for nuts(tools will not fit)"
+"B1","M3 inside minimum","TopLayer","M3_minimum","4.5000","45.9000","0","smaller M3 mounting holde for inside the PCB. should not be used for nuts(tools will not fit)"
+"U2","ArduinoNano ESP32","TopLayer","Copy_of_New_footprint_1","28.7460","26.5360","180","Arduino nano development board"
+"U1","MAX3250EAI+","TopLayer","SSOP-28P,_no-thermal","28.9000","33.5000","0","isolated Line Transceiver, 2 Func, 2 Driver, 2 Rcvr, BICMOS, PDSO28"
+"R4","0R","TopLayer","R0603","28.7000","18.7000","270","Resistor 0R, 0603, 1%, SMD"
+"R3","0R","TopLayer","R0603","30.4000","18.6750","90","Resistor 0R, 0603, 1%, SMD"
+"R2","0R","TopLayer","R0603","28.7000","22.0000","270","Resistor 0R, 0603, 1%, SMD"
+"R1","0R","TopLayer","R0603","30.4000","22.0000","90","Resistor 0R, 0603, 1%, SMD"
+"P1","Dsub 9 pin Male right angle","TopLayer","618009231221","43.7000","26.7000","90","9 Way Right Angle Through Hole Pcb D-sub Connector Plug, 2.77MM, 2.84MM Pitch"
+"J3","Pin header 2x4","TopLayer","61300821821","13.9000","45.9000","0","Board Connector, 8 Contact(s), 2 Row(s), Female, Straight, 0.1 inch Pitch, Solder Terminal, Locking, Black Insulator, Socket"
+"J2","Micro-Fit 4pin Horizontal THT","TopLayer","43045-0400","9.1050","5.3000","270","Rectangular Power Connector, 4 Contact(s), Male, Solder Terminal, Plug"
+"J1","Dsub 9 pin Female right angle","TopLayer","618009231321","12.0600","26.7000","270","9 Way Right Angle Through Hole Pcb D-sub Connector Socket, 2.77MM, 2.84MM Pitch"
+"C9","10n/100V","TopLayer","C0603","24.1000","25.2000","180","10nF, 100V, 0603"
+"C8","0.47u/100V","TopLayer","C0805","28.6000","26.2000","270","0.47uF, 100V, 0805"
+"C7","0.47u/100V","TopLayer","C0805","26.4000","26.2000","270","0.47uF, 100V, 0805"
+"C6","2.2u/25V","TopLayer","C0805","30.8000","26.2000","270","2.2µF, 25V, 0805"
+"C5","0.47u/100V","TopLayer","C0805","23.0500","28.6000","270","0.47uF, 100V, 0805"
+"C4","0.1u/100V","TopLayer","C0603","23.3500","31.8750","270","0.1µF, 100V, 0603"
+"C3","0.47u/100V","TopLayer","C0805","34.5000","36.4250","90","0.47uF, 100V, 0805"
+"C2","0.47u/100V","TopLayer","C0805","23.1000","35.7750","90","0.47uF, 100V, 0805"
+"C1","2.2u/25V","TopLayer","C0805","31.5000","39.9000","180","2.2µF, 25V, 0805"
