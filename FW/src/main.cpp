@@ -33,6 +33,7 @@ void ledYellow() {
 void ledOff() {
   setLEDColor(0, 0, 0);
 }
+
 // ========== State Machine ==========
 enum SystemState {
   STATE_WAIT_POWERUP,
@@ -43,7 +44,7 @@ enum SystemState {
 
 SystemState systemState = STATE_WAIT_POWERUP;
 unsigned long lastAliveCheck = 0;
-const unsigned long ALIVE_CHECK_INTERVAL = 10000; // Check modem every 10 seconds
+const unsigned long ALIVE_CHECK_INTERVAL = 30000; // Check modem every 10 seconds
 
 // ========== Structures ==========
 struct ATModification {
@@ -144,7 +145,36 @@ void waitForDebugResponse(unsigned long timeout = 500) {
     }
   }
 }
+// --- Detect Modem Model ---
+const ModemProfile* detectModemModel() {
+  DEBUG_SERIAL.println("Detecting modem model...");
+  MODEM_SERIAL.println("AT+GMM");
+  unsigned long start = millis();
+  String resp = "";
 
+  while (millis() - start < DETECT_TIMEOUT) {
+    while (MODEM_SERIAL.available()) {
+      char c = MODEM_SERIAL.read();
+      resp += c;
+    }
+    if (resp.indexOf("OK") >= 0) break;
+  }
+
+  resp.trim();
+  DEBUG_SERIAL.print("AT+GMM response: ");
+  DEBUG_SERIAL.println(resp);
+
+  for (size_t i = 0; i < sizeof(profiles) / sizeof(profiles[0]); i++) {
+    if (resp.indexOf(profiles[i].modelID) >= 0) {
+      DEBUG_SERIAL.print("Matched profile: ");
+      DEBUG_SERIAL.println(profiles[i].modelID);
+      return &profiles[i];
+    }
+  }
+
+  DEBUG_SERIAL.println("No known modem detected; using default behavior.");
+  return nullptr;
+}
 // --- Check if modem is alive ---
 bool checkModemAlive() {
   DEBUG_SERIAL.println("[ALIVE CHECK] Sending AT...");
@@ -161,6 +191,22 @@ bool checkModemAlive() {
     }
     if (resp.indexOf("OK") >= 0) {
       DEBUG_SERIAL.println("\n[ALIVE] Modem is responsive.");
+
+      // If we don't have a profile yet, try to detect one now
+      if (!activeProfile) {
+        DEBUG_SERIAL.println("[ALIVE] No active profile — attempting to detect profile...");
+        const ModemProfile* p = detectModemModel();
+        if (p) {
+          activeProfile = p;
+          DEBUG_SERIAL.print("Active profile set to: ");
+          DEBUG_SERIAL.println(activeProfile->modelID);
+          ledGreen();
+        } else {
+          DEBUG_SERIAL.println("No profile matched during alive check; continuing without profile.");
+          ledYellow();
+        }
+      }
+
       return true;
     }
   }
@@ -223,35 +269,56 @@ void waitForModemPowerUp() {
   }
 }
 
-// --- Detect Modem Model ---
-const ModemProfile* detectModemModel() {
-  DEBUG_SERIAL.println("Detecting modem model...");
-  MODEM_SERIAL.println("AT+GMM");
-  unsigned long start = millis();
-  String resp = "";
-
-  while (millis() - start < DETECT_TIMEOUT) {
-    while (MODEM_SERIAL.available()) {
-      char c = MODEM_SERIAL.read();
-      resp += c;
+static void writeEscaped(HardwareSerial &ser, const char *src, bool appendCRLFIfNoNL = false) {
+  bool sawNewline = false;
+  bool sawCtrlZ = false;
+  for (const char *p = src; *p; ++p) {
+    if (*p == '\\') {
+      ++p;
+      if (!*p) break;
+      if (*p == 'n') { ser.write('\n'); sawNewline = true; }
+      else if (*p == 'r') { ser.write('\r'); sawNewline = true; }
+      else if (*p == 't') { ser.write('\t'); }
+      else if (*p == '\\') { ser.write('\\'); }
+      else if (*p == 'x' || *p == 'X') {
+        char hi = *(++p);
+        char lo = *(++p);
+        if (!hi || !lo) break;
+        auto hexVal = [](char c)->int {
+          if (c >= '0' && c <= '9') return c - '0';
+          if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+          if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+          return 0;
+        };
+        uint8_t val = (hexVal(hi) << 4) | hexVal(lo);
+        ser.write((char)val);
+        if (val == 0x1A) sawCtrlZ = true;
+      } else {
+        ser.write('\\');
+        ser.write(*p);
+      }
+    } else if (*p == '^') {
+      const char *q = p + 1;
+      if (*q == 'Z' || *q == 'z') {
+        ser.write((char)0x1A);
+        sawCtrlZ = true;
+        ++p;
+      } else {
+        ser.write(*p);
+        if (*p == '\r' || *p == '\n') sawNewline = true;
+      }
+    } else {
+      ser.write(*p);
+      if (*p == '\r' || *p == '\n') sawNewline = true;
+      if ((uint8_t)*p == 0x1A) sawCtrlZ = true;
     }
-    if (resp.indexOf("OK") >= 0) break;
   }
 
-  resp.trim();
-  DEBUG_SERIAL.print("AT+GMM response: ");
-  DEBUG_SERIAL.println(resp);
-
-  for (size_t i = 0; i < sizeof(profiles) / sizeof(profiles[0]); i++) {
-    if (resp.indexOf(profiles[i].modelID) >= 0) {
-      DEBUG_SERIAL.print("Matched profile: ");
-      DEBUG_SERIAL.println(profiles[i].modelID);
-      return &profiles[i];
-    }
+  // don't append CRLF if we saw a newline or a Ctrl-Z terminator
+  if (appendCRLFIfNoNL && !sawNewline && !sawCtrlZ) {
+    ser.write('\r');
+    ser.write('\n');
   }
-
-  DEBUG_SERIAL.println("No known modem detected; using default behavior.");
-  return nullptr;
 }
 
 // --- Debug command forwarding (blocking, no forward to host/modem) ---
@@ -395,7 +462,8 @@ void loop() {
           if (modWait) {
             DEBUG_SERIAL.print("Sending: ");
             DEBUG_SERIAL.println(modWait->command);
-            MODEM_SERIAL.println(modWait->command);
+            // send command (append CRLF if none) and wait for OK
+            writeEscaped(MODEM_SERIAL, modWait->command, true);
             
             unsigned long start = millis();
             String resp = "";
@@ -416,7 +484,8 @@ void loop() {
             if (gotOK) {
               DEBUG_SERIAL.print("Got OK, sending replacement: ");
               DEBUG_SERIAL.println(modWait->replacement);
-              MODEM_SERIAL.println(modWait->replacement);
+              // send replacement (append CRLF if none)
+              writeEscaped(MODEM_SERIAL, modWait->replacement, true);
             } else {
               DEBUG_SERIAL.println("[WARN] No OK received for command");
             }
@@ -429,7 +498,8 @@ void loop() {
               DEBUG_SERIAL.println(outCmd);
             }
 
-            MODEM_SERIAL.println(outCmd);
+            // send host command to modem, support escapes and Ctrl sequences, append CRLF if none
+            writeEscaped(MODEM_SERIAL, outCmd, true);
           }
           
           hostBuffer = "";
