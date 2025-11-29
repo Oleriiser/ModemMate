@@ -6,7 +6,7 @@
 
 #define SERIAL_BAUD 115200
 #define DETECT_TIMEOUT 3000
-#define TERMINATOR ';'
+//#define TERMINATOR ';'
 
 // ========== Structures ==========
 struct ATModification {
@@ -16,6 +16,7 @@ struct ATModification {
 
 struct ModemProfile {
   const char* modelID;
+  const char* powerUpMessage;
   const ATModification* modifications;
   size_t modCount;
 };
@@ -23,7 +24,10 @@ struct ModemProfile {
 // ========== Modem Profiles ==========
 
 const ATModification sim7600_mods[] = {
-  {"ATZ", "ATZ\nAT+CNMI=2,2,0,0,0\nAT+CMGF=1"}
+  {"ATZ", "ATZ\nAT+CNMI=2,2,0,0,0\nAT+CMGF=1\n"}
+};
+const ATModification ec200_mods[] = {
+  {"ATZ", "ATZ\rAT+CNMI=2,2,0,0,0\rAT+CMGF=1\r"}
 };
 
 const ATModification bg95_mods[] = {
@@ -32,8 +36,9 @@ const ATModification bg95_mods[] = {
 };
 
 const ModemProfile profiles[] = {
-  {"SIM7600", sim7600_mods, sizeof(sim7600_mods) / sizeof(sim7600_mods[0])},
-  {"BG95",    bg95_mods,    sizeof(bg95_mods) / sizeof(bg95_mods[0])}
+  {"SIM7600", "RDY", sim7600_mods, sizeof(sim7600_mods) / sizeof(sim7600_mods[0])},
+  {"BG95",    "RDY", bg95_mods,    sizeof(bg95_mods) / sizeof(bg95_mods[0])},
+  {"EC200A", "RDY", ec200_mods,  sizeof(ec200_mods) / sizeof(ec200_mods[0])}
 };
 
 const ModemProfile* activeProfile = nullptr;
@@ -56,14 +61,17 @@ const char* findModification(const char* cmd) {
 
 void forwardResponse() {
   while (MODEM_SERIAL.available()) {
-    HOST_SERIAL.write(MODEM_SERIAL.read());
+    char b =MODEM_SERIAL.read();
+    HOST_SERIAL.write(b);
+    DEBUG_SERIAL.print(b);
   }
 }
 
 // --- Detect Modem Model by "ATI" ---
 const ModemProfile* detectModemModel() {
   DEBUG_SERIAL.println("Detecting modem model...");
-  MODEM_SERIAL.println("ATI");
+  MODEM_SERIAL.println("AT+GMM");
+  //MODEM_SERIAL.println("ATI");
   unsigned long start = millis();
   String resp = "";
 
@@ -76,7 +84,7 @@ const ModemProfile* detectModemModel() {
   }
 
   resp.trim();
-  DEBUG_SERIAL.print("ATI response: ");
+  DEBUG_SERIAL.print("AT+GMM response: ");
   DEBUG_SERIAL.println(resp);
 
   for (size_t i = 0; i < sizeof(profiles) / sizeof(profiles[0]); i++) {
@@ -110,10 +118,26 @@ void processDebugCommand(const String& msg) {
       DEBUG_SERIAL.println(body);
       MODEM_SERIAL.println(body);
       break;
+     case 'R':
+      DEBUG_SERIAL.println("[CMD] Restarting...");
+  #ifdef ESP32
+      esp_restart();
+  #elif defined(ARDUINO_ARCH_SAMD)
+      NVIC_SystemReset();
+  #elif defined(ARDUINO_ARCH_AVR)
+      wdt_enable(WDTO_15MS);
+      while (1) {}
+  #else
+      // No known reset mechanism for this arch; halt instead.
+      DEBUG_SERIAL.println("reboot of this controller is not supported.");
+  #endif
+      break;
 
     default:
       DEBUG_SERIAL.print("[WARN] Unknown prefix: ");
       DEBUG_SERIAL.println(prefix);
+      DEBUG_SERIAL.print("[WARN] Data: ");
+      DEBUG_SERIAL.println(body);
       break;
   }
 }
@@ -121,10 +145,10 @@ void processDebugCommand(const String& msg) {
 // ========== Setup ==========
 void setup() {
   DEBUG_SERIAL.begin(SERIAL_BAUD);
-  HOST_SERIAL.begin(SERIAL_BAUD,SERIAL_8N1, D12, D13);
-  MODEM_SERIAL.begin(SERIAL_BAUD,SERIAL_8N1, D11, D10);
+  HOST_SERIAL.begin(SERIAL_BAUD,SERIAL_8N1, A0, A2);
+  MODEM_SERIAL.begin(SERIAL_BAUD,SERIAL_8N1, A1, A3);
 
-  delay(1000);
+  delay(5000);
   DEBUG_SERIAL.println("AT Command Proxy starting...");
 
   activeProfile = detectModemModel();
@@ -152,7 +176,7 @@ void loop() {
 
         if (mod) {
           DEBUG_SERIAL.print("Modified to: ");
-          DEBUG_SERIAL.println(outCmd);
+          DEBUG_SERIAL.print(outCmd);
         }
 
         MODEM_SERIAL.println(outCmd);
@@ -169,7 +193,8 @@ void loop() {
   // From Debug Port (Manual)
   while (DEBUG_SERIAL.available()) {
     char c = DEBUG_SERIAL.read();
-    if (c == TERMINATOR) {
+    DEBUG_SERIAL.print(c);
+    if (c == '\r' || c == '\n') {
       if (debugBuffer.length() > 0) {
         processDebugCommand(debugBuffer);
         debugBuffer = "";
