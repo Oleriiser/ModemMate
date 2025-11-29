@@ -7,6 +7,43 @@
 #define SERIAL_BAUD 115200
 #define DETECT_TIMEOUT 3000
 //#define TERMINATOR ';'
+// ========== LED Pin Configuration ==========
+#define LED_RED   14
+#define LED_GREEN 15
+#define LED_BLUE  16
+
+void setLEDColor(uint8_t red, uint8_t green, uint8_t blue) {
+  analogWrite(LED_RED, 256-red);
+  analogWrite(LED_GREEN, 256-green);
+  analogWrite(LED_BLUE, 256-blue);
+}
+
+void ledRed() {
+  setLEDColor(255, 0, 0);
+}
+
+void ledGreen() {
+  setLEDColor(0, 255, 0);
+}
+
+void ledYellow() {
+  setLEDColor(255, 255, 0);
+}
+
+void ledOff() {
+  setLEDColor(0, 0, 0);
+}
+// ========== State Machine ==========
+enum SystemState {
+  STATE_WAIT_POWERUP,
+  STATE_DETECT_MODEM,
+  STATE_READY,
+  STATE_MODEM_DEAD
+};
+
+SystemState systemState = STATE_WAIT_POWERUP;
+unsigned long lastAliveCheck = 0;
+const unsigned long ALIVE_CHECK_INTERVAL = 10000; // Check modem every 10 seconds
 
 // ========== Structures ==========
 struct ATModification {
@@ -17,7 +54,7 @@ struct ATModification {
 struct ATModificationWithWait {
   const char* command;
   const char* replacement;
-  bool waitForOK;  // Send command first, wait for OK, then send replacement
+  bool waitForOK;
 };
 
 struct ModemProfile {
@@ -31,28 +68,21 @@ struct ModemProfile {
 
 // ========== Modem Profiles ==========
 
-//profile for SIM7600
 const ATModification sim7600_mods[] = {
   
 };
 const ATModificationWithWait sim7600_mods_wait[] = {
   {"ATZ", "AT+CNMI=2,2,0,0,0\nAT+CMGF=1\n", true}
 };
-//end profile for SIM7600
 
-
-//profile for EC200A
 const ATModification ec200_mods[] = {
   {"AT+CREG", "AT+CREG?"}
 };
 
 const ATModificationWithWait ec200_mods_wait[] = {
-  {"ATZ", "ATE0\rAT+CNMI=2,2,0,0,0\rAT+CMGF=1\r", true} //we first send ATZ, wait for OK, then send the rest
+  {"ATZ", "ATE0\rAT+CNMI=2,2,0,0,0\rAT+CMGF=1\r", true}
 };
-//end profile for EC200A
 
-
-//profile for BG95
 const ATModification bg95_mods[] = {
   {"AT+CSQ", "AT+CSQ?"},
   {"AT+CREG", "AT+CREG?"}
@@ -60,8 +90,6 @@ const ATModification bg95_mods[] = {
 const ATModificationWithWait bg95_mods_wait[] = {
   
 };
-//end profile for BG95
-
 
 const ModemProfile profiles[] = {
   {"SIM7600", "RDY", sim7600_mods, sizeof(sim7600_mods) / sizeof(sim7600_mods[0]), sim7600_mods_wait, sizeof(sim7600_mods_wait) / sizeof(sim7600_mods_wait[0])},
@@ -105,6 +133,42 @@ void forwardResponse() {
   }
 }
 
+// --- Wait for debug command response (blocking, no forward) ---
+void waitForDebugResponse(unsigned long timeout = 500) {
+  DEBUG_SERIAL.println("[WAIT] Collecting response...");
+  unsigned long start = millis();
+  while (millis() - start < timeout) {
+    while (MODEM_SERIAL.available()) {
+      char c = MODEM_SERIAL.read();
+      DEBUG_SERIAL.print(c);
+    }
+  }
+}
+
+// --- Check if modem is alive ---
+bool checkModemAlive() {
+  DEBUG_SERIAL.println("[ALIVE CHECK] Sending AT...");
+  MODEM_SERIAL.println("AT");
+  
+  unsigned long start = millis();
+  String resp = "";
+  
+  while (millis() - start < DETECT_TIMEOUT) {
+    while (MODEM_SERIAL.available()) {
+      char c = MODEM_SERIAL.read();
+      resp += c;
+      DEBUG_SERIAL.print(c);
+    }
+    if (resp.indexOf("OK") >= 0) {
+      DEBUG_SERIAL.println("\n[ALIVE] Modem is responsive.");
+      return true;
+    }
+  }
+  
+  DEBUG_SERIAL.println("\n[ALIVE FAIL] No response from modem!");
+  return false;
+}
+
 // --- Wait for modem power up ---
 void waitForModemPowerUp() {
   DEBUG_SERIAL.println("Waiting for modem to power up...");
@@ -143,7 +207,6 @@ void waitForModemPowerUp() {
         resp += c;
         DEBUG_SERIAL.print(c);
       }
-      // Check all profiles for their power-up messages
       for (size_t i = 0; i < sizeof(profiles) / sizeof(profiles[0]); i++) {
         if (resp.indexOf(profiles[i].powerUpMessage) >= 0) {
           DEBUG_SERIAL.println("\n[OK] Detected power-up message.");
@@ -160,7 +223,7 @@ void waitForModemPowerUp() {
   }
 }
 
-// --- Detect Modem Model by "ATI" ---
+// --- Detect Modem Model ---
 const ModemProfile* detectModemModel() {
   DEBUG_SERIAL.println("Detecting modem model...");
   MODEM_SERIAL.println("AT+GMM");
@@ -191,8 +254,7 @@ const ModemProfile* detectModemModel() {
   return nullptr;
 }
 
-
-// --- Debug command forwarding ---
+// --- Debug command forwarding (blocking, no forward to host/modem) ---
 void processDebugCommand(const String& msg) {
   if (msg.length() < 2) return;
 
@@ -204,14 +266,17 @@ void processDebugCommand(const String& msg) {
       DEBUG_SERIAL.print("[DBG→HOST] ");
       DEBUG_SERIAL.println(body);
       HOST_SERIAL.println(body);
+      waitForDebugResponse();
       break;
 
     case 'M':
       DEBUG_SERIAL.print("[DBG→MODEM] ");
       DEBUG_SERIAL.println(body);
       MODEM_SERIAL.println(body);
+      waitForDebugResponse();
       break;
-     case 'R':
+
+    case 'R':
       DEBUG_SERIAL.println("[CMD] Restarting...");
   #ifdef ESP32
       esp_restart();
@@ -221,16 +286,77 @@ void processDebugCommand(const String& msg) {
       wdt_enable(WDTO_15MS);
       while (1) {}
   #else
-      // No known reset mechanism for this arch; halt instead.
-      DEBUG_SERIAL.println("reboot of this controller is not supported.");
+      DEBUG_SERIAL.println("Reboot of this controller is not supported.");
   #endif
       break;
 
     default:
       DEBUG_SERIAL.print("[WARN] Unknown prefix: ");
       DEBUG_SERIAL.println(prefix);
-      DEBUG_SERIAL.print("[WARN] Data: ");
-      DEBUG_SERIAL.println(body);
+      break;
+  }
+}
+
+// --- State Machine Handler ---
+void handleSystemState() {
+  static unsigned long lastStateTime = 0;
+  static const unsigned long STATE_PROCESS_INTERVAL = 100; // Process state every 100ms
+
+  // Only process state machine periodically to avoid blocking
+  if (millis() - lastStateTime < STATE_PROCESS_INTERVAL) {
+    return;
+  }
+  lastStateTime = millis();
+
+  switch (systemState) {
+    case STATE_WAIT_POWERUP:
+      ledRed();
+      DEBUG_SERIAL.println("[STATE] Waiting for modem power up...");
+      waitForModemPowerUp();
+      systemState = STATE_DETECT_MODEM;
+      break;
+
+    case STATE_DETECT_MODEM:
+      //ledRed();
+      activeProfile = detectModemModel();
+      if (activeProfile) {
+        DEBUG_SERIAL.print("Active profile set to: ");
+        DEBUG_SERIAL.println(activeProfile->modelID);
+        ledGreen();
+      } else {
+        DEBUG_SERIAL.println("No active profile — commands will be passed through unchanged.");
+        ledYellow();
+      }
+      systemState = STATE_READY;
+      lastAliveCheck = millis();
+      break;
+
+    case STATE_READY:
+      // Check modem alive periodically
+      if (millis() - lastAliveCheck >= ALIVE_CHECK_INTERVAL) {
+        if (!checkModemAlive()) {
+          DEBUG_SERIAL.println("[CRITICAL] Modem is dead! Returning to WAIT_POWERUP state...");
+          ledRed();
+          systemState = STATE_WAIT_POWERUP;
+        }
+        lastAliveCheck = millis();
+      }
+      break;
+
+    case STATE_MODEM_DEAD:
+      ledRed();
+      DEBUG_SERIAL.println("[REBOOT] Rebooting microcontroller...");
+      delay(1000);
+  #ifdef ESP32
+      esp_restart();
+  #elif defined(ARDUINO_ARCH_SAMD)
+      NVIC_SystemReset();
+  #elif defined(ARDUINO_ARCH_AVR)
+      wdt_enable(WDTO_15MS);
+      while (1) {}
+  #else
+      DEBUG_SERIAL.println("[ERROR] Reboot not supported on this platform!");
+  #endif
       break;
   }
 }
@@ -238,89 +364,86 @@ void processDebugCommand(const String& msg) {
 // ========== Setup ==========
 void setup() {
   DEBUG_SERIAL.begin(SERIAL_BAUD);
-  HOST_SERIAL.begin(SERIAL_BAUD,SERIAL_8N1, A0, A2);
-  MODEM_SERIAL.begin(SERIAL_BAUD,SERIAL_8N1, A1, A3);
-
+  HOST_SERIAL.begin(SERIAL_BAUD, SERIAL_8N1, A0, A2);
+  MODEM_SERIAL.begin(SERIAL_BAUD, SERIAL_8N1, A1, A3);
+  
+  pinMode(LED_RED, OUTPUT);
+  pinMode(LED_GREEN, OUTPUT);
+  pinMode(LED_BLUE, OUTPUT);
+  ledRed();
+  
   delay(5000);
   DEBUG_SERIAL.println("AT Command Proxy starting...");
-
-  waitForModemPowerUp();
-
-  activeProfile = detectModemModel();
-
-  if (activeProfile) {
-    DEBUG_SERIAL.print("Active profile set to: ");
-    DEBUG_SERIAL.println(activeProfile->modelID);
-  } else {
-    DEBUG_SERIAL.println("No active profile — commands will be passed through unchanged.");
-  }
 }
 
 // ========== Main Loop ==========
 void loop() {
-  // From Host → Modem
-  while (HOST_SERIAL.available()) {
-    char c = HOST_SERIAL.read();
-    if (c == '\r' || c == '\n') {
-      if (hostBuffer.length() > 0) {
-        DEBUG_SERIAL.print("RX Host: ");
-        DEBUG_SERIAL.println(hostBuffer);
+  // State machine handler
+  handleSystemState();
 
-        // Check for modifications with wait-for-OK pattern
-        const ATModificationWithWait* modWait = findModificationWithWait(hostBuffer.c_str());
-        if (modWait) {
-          DEBUG_SERIAL.print("Sending: ");
-          DEBUG_SERIAL.println(modWait->command);
-          MODEM_SERIAL.println(modWait->command);
-          
-          // Wait for OK response
-          unsigned long start = millis();
-          String resp = "";
-          bool gotOK = false;
-          while (millis() - start < DETECT_TIMEOUT) {
-            while (MODEM_SERIAL.available()) {
-              char c = MODEM_SERIAL.read();
-              resp += c;
-              HOST_SERIAL.write(c);
-              DEBUG_SERIAL.print(c);
+  // Only process normal commands if system is READY
+  if (systemState == STATE_READY) {
+    // From Host → Modem
+    while (HOST_SERIAL.available()) {
+      char c = HOST_SERIAL.read();
+      if (c == '\r' || c == '\n') {
+        if (hostBuffer.length() > 0) {
+          DEBUG_SERIAL.print("RX Host: ");
+          DEBUG_SERIAL.println(hostBuffer);
+
+          const ATModificationWithWait* modWait = findModificationWithWait(hostBuffer.c_str());
+          if (modWait) {
+            DEBUG_SERIAL.print("Sending: ");
+            DEBUG_SERIAL.println(modWait->command);
+            MODEM_SERIAL.println(modWait->command);
+            
+            unsigned long start = millis();
+            String resp = "";
+            bool gotOK = false;
+            while (millis() - start < DETECT_TIMEOUT) {
+              while (MODEM_SERIAL.available()) {
+                char c = MODEM_SERIAL.read();
+                resp += c;
+                HOST_SERIAL.write(c);
+                DEBUG_SERIAL.print(c);
+              }
+              if (resp.indexOf("OK") >= 0) {
+                gotOK = true;
+                break;
+              }
             }
-            if (resp.indexOf("OK") >= 0) {
-              gotOK = true;
-              break;
+            
+            if (gotOK) {
+              DEBUG_SERIAL.print("Got OK, sending replacement: ");
+              DEBUG_SERIAL.println(modWait->replacement);
+              MODEM_SERIAL.println(modWait->replacement);
+            } else {
+              DEBUG_SERIAL.println("[WARN] No OK received for command");
             }
-          }
-          
-          if (gotOK) {
-            DEBUG_SERIAL.print("Got OK, sending replacement: ");
-            DEBUG_SERIAL.println(modWait->replacement);
-            MODEM_SERIAL.println(modWait->replacement);
           } else {
-            DEBUG_SERIAL.println("[WARN] No OK received for command");
-          }
-        } else {
-          // Check for regular modifications
-          const char* mod = findModification(hostBuffer.c_str());
-          const char* outCmd = mod ? mod : hostBuffer.c_str();
+            const char* mod = findModification(hostBuffer.c_str());
+            const char* outCmd = mod ? mod : hostBuffer.c_str();
 
-          if (mod) {
-            DEBUG_SERIAL.print("Modified to: ");
-            DEBUG_SERIAL.println(outCmd);
-          }
+            if (mod) {
+              DEBUG_SERIAL.print("Modified to: ");
+              DEBUG_SERIAL.println(outCmd);
+            }
 
-          MODEM_SERIAL.println(outCmd);
+            MODEM_SERIAL.println(outCmd);
+          }
+          
+          hostBuffer = "";
         }
-        
-        hostBuffer = "";
+      } else {
+        hostBuffer += c;
       }
-    } else {
-      hostBuffer += c;
     }
+
+    // From Modem → Host
+    forwardResponse();
   }
 
-  // From Modem → Host
-  forwardResponse();
-
-  // From Debug Port (Manual)
+  // From Debug Port (always available, even during state transitions)
   while (DEBUG_SERIAL.available()) {
     char c = DEBUG_SERIAL.read();
     DEBUG_SERIAL.print(c);
