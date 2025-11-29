@@ -14,31 +14,59 @@ struct ATModification {
   const char* replacement;
 };
 
+struct ATModificationWithWait {
+  const char* command;
+  const char* replacement;
+  bool waitForOK;  // Send command first, wait for OK, then send replacement
+};
+
 struct ModemProfile {
   const char* modelID;
   const char* powerUpMessage;
   const ATModification* modifications;
   size_t modCount;
+  const ATModificationWithWait* modificationsWithWait;
+  size_t modWithWaitCount;
 };
 
 // ========== Modem Profiles ==========
 
+//profile for SIM7600
 const ATModification sim7600_mods[] = {
-  {"ATZ", "ATZ\nAT+CNMI=2,2,0,0,0\nAT+CMGF=1\n"}
+  
 };
+const ATModificationWithWait sim7600_mods_wait[] = {
+  {"ATZ", "AT+CNMI=2,2,0,0,0\nAT+CMGF=1\n", true}
+};
+//end profile for SIM7600
+
+
+//profile for EC200A
 const ATModification ec200_mods[] = {
-  {"ATZ", "ATZ\rAT+CNMI=2,2,0,0,0\rAT+CMGF=1\r"}
+  {"AT+CREG", "AT+CREG?"}
 };
 
+const ATModificationWithWait ec200_mods_wait[] = {
+  {"ATZ", "ATE0\rAT+CNMI=2,2,0,0,0\rAT+CMGF=1\r", true} //we first send ATZ, wait for OK, then send the rest
+};
+//end profile for EC200A
+
+
+//profile for BG95
 const ATModification bg95_mods[] = {
   {"AT+CSQ", "AT+CSQ?"},
   {"AT+CREG", "AT+CREG?"}
 };
+const ATModificationWithWait bg95_mods_wait[] = {
+  
+};
+//end profile for BG95
+
 
 const ModemProfile profiles[] = {
-  {"SIM7600", "RDY", sim7600_mods, sizeof(sim7600_mods) / sizeof(sim7600_mods[0])},
-  {"BG95",    "RDY", bg95_mods,    sizeof(bg95_mods) / sizeof(bg95_mods[0])},
-  {"EC200A", "RDY", ec200_mods,  sizeof(ec200_mods) / sizeof(ec200_mods[0])}
+  {"SIM7600", "RDY", sim7600_mods, sizeof(sim7600_mods) / sizeof(sim7600_mods[0]), sim7600_mods_wait, sizeof(sim7600_mods_wait) / sizeof(sim7600_mods_wait[0])},
+  {"BG95",    "RDY", bg95_mods,    sizeof(bg95_mods) / sizeof(bg95_mods[0]), bg95_mods_wait, sizeof(bg95_mods_wait) / sizeof(bg95_mods_wait[0])},
+  {"EC200A", "RDY", ec200_mods,  sizeof(ec200_mods) / sizeof(ec200_mods[0]), ec200_mods_wait, sizeof(ec200_mods_wait) / sizeof(ec200_mods_wait[0])}
 };
 
 const ModemProfile* activeProfile = nullptr;
@@ -59,11 +87,76 @@ const char* findModification(const char* cmd) {
   return nullptr;
 }
 
+const ATModificationWithWait* findModificationWithWait(const char* cmd) {
+  if (!activeProfile) return nullptr;
+  for (size_t i = 0; i < activeProfile->modWithWaitCount; i++) {
+    if (strstr(cmd, activeProfile->modificationsWithWait[i].command) == cmd) {
+      return &activeProfile->modificationsWithWait[i];
+    }
+  }
+  return nullptr;
+}
+
 void forwardResponse() {
   while (MODEM_SERIAL.available()) {
-    char b =MODEM_SERIAL.read();
+    char b = MODEM_SERIAL.read();
     HOST_SERIAL.write(b);
     DEBUG_SERIAL.print(b);
+  }
+}
+
+// --- Wait for modem power up ---
+void waitForModemPowerUp() {
+  DEBUG_SERIAL.println("Waiting for modem to power up...");
+  unsigned long start = millis();
+  String resp = "";
+  bool found = false;
+
+  // First, try to get a response to AT command
+  while (millis() - start < DETECT_TIMEOUT && !found) {
+    MODEM_SERIAL.println("AT");
+    unsigned long cmdStart = millis();
+    
+    while (millis() - cmdStart < 1000 && !found) {
+      while (MODEM_SERIAL.available()) {
+        char c = MODEM_SERIAL.read();
+        resp += c;
+        DEBUG_SERIAL.print(c);
+      }
+      if (resp.indexOf("OK") >= 0) {
+        found = true;
+        DEBUG_SERIAL.println("\n[OK] Modem responded to AT command.");
+      }
+    }
+    resp = "";
+    delay(500);
+  }
+
+  if (!found) {
+    DEBUG_SERIAL.println("Modem did not respond to AT; waiting for power-up message...");
+    resp = "";
+    start = millis();
+    
+    while (millis() - start < DETECT_TIMEOUT * 2) {
+      while (MODEM_SERIAL.available()) {
+        char c = MODEM_SERIAL.read();
+        resp += c;
+        DEBUG_SERIAL.print(c);
+      }
+      // Check all profiles for their power-up messages
+      for (size_t i = 0; i < sizeof(profiles) / sizeof(profiles[0]); i++) {
+        if (resp.indexOf(profiles[i].powerUpMessage) >= 0) {
+          DEBUG_SERIAL.println("\n[OK] Detected power-up message.");
+          found = true;
+          break;
+        }
+      }
+      if (found) break;
+    }
+  }
+
+  if (!found) {
+    DEBUG_SERIAL.println("[WARN] Modem power-up timeout; proceeding anyway.");
   }
 }
 
@@ -71,7 +164,6 @@ void forwardResponse() {
 const ModemProfile* detectModemModel() {
   DEBUG_SERIAL.println("Detecting modem model...");
   MODEM_SERIAL.println("AT+GMM");
-  //MODEM_SERIAL.println("ATI");
   unsigned long start = millis();
   String resp = "";
 
@@ -98,6 +190,7 @@ const ModemProfile* detectModemModel() {
   DEBUG_SERIAL.println("No known modem detected; using default behavior.");
   return nullptr;
 }
+
 
 // --- Debug command forwarding ---
 void processDebugCommand(const String& msg) {
@@ -151,6 +244,8 @@ void setup() {
   delay(5000);
   DEBUG_SERIAL.println("AT Command Proxy starting...");
 
+  waitForModemPowerUp();
+
   activeProfile = detectModemModel();
 
   if (activeProfile) {
@@ -171,15 +266,50 @@ void loop() {
         DEBUG_SERIAL.print("RX Host: ");
         DEBUG_SERIAL.println(hostBuffer);
 
-        const char* mod = findModification(hostBuffer.c_str());
-        const char* outCmd = mod ? mod : hostBuffer.c_str();
+        // Check for modifications with wait-for-OK pattern
+        const ATModificationWithWait* modWait = findModificationWithWait(hostBuffer.c_str());
+        if (modWait) {
+          DEBUG_SERIAL.print("Sending: ");
+          DEBUG_SERIAL.println(modWait->command);
+          MODEM_SERIAL.println(modWait->command);
+          
+          // Wait for OK response
+          unsigned long start = millis();
+          String resp = "";
+          bool gotOK = false;
+          while (millis() - start < DETECT_TIMEOUT) {
+            while (MODEM_SERIAL.available()) {
+              char c = MODEM_SERIAL.read();
+              resp += c;
+              HOST_SERIAL.write(c);
+              DEBUG_SERIAL.print(c);
+            }
+            if (resp.indexOf("OK") >= 0) {
+              gotOK = true;
+              break;
+            }
+          }
+          
+          if (gotOK) {
+            DEBUG_SERIAL.print("Got OK, sending replacement: ");
+            DEBUG_SERIAL.println(modWait->replacement);
+            MODEM_SERIAL.println(modWait->replacement);
+          } else {
+            DEBUG_SERIAL.println("[WARN] No OK received for command");
+          }
+        } else {
+          // Check for regular modifications
+          const char* mod = findModification(hostBuffer.c_str());
+          const char* outCmd = mod ? mod : hostBuffer.c_str();
 
-        if (mod) {
-          DEBUG_SERIAL.print("Modified to: ");
-          DEBUG_SERIAL.print(outCmd);
+          if (mod) {
+            DEBUG_SERIAL.print("Modified to: ");
+            DEBUG_SERIAL.println(outCmd);
+          }
+
+          MODEM_SERIAL.println(outCmd);
         }
-
-        MODEM_SERIAL.println(outCmd);
+        
         hostBuffer = "";
       }
     } else {
