@@ -73,7 +73,7 @@ const ATModification sim7600_mods[] = {
   
 };
 const ATModificationWithWait sim7600_mods_wait[] = {
-  {"ATZ", "AT+CNMI=2,2,0,0,0\n\rAT+CMGF=1\r", true}
+  {"ATZ", "AT+CNMI=2,2,0,0,0\rAT+CMGF=1\r", true} // commands with \r or \n will be seperated and sent individually
 };
 
 const ATModification ec200_mods[] = {
@@ -496,14 +496,62 @@ void loop() {
             }
             
             if (gotOK) {
-              DEBUG_SERIAL.print("Got OK, sending replacement: ");
+              DEBUG_SERIAL.print("Got OK, sending replacement sequence: ");
               DEBUG_SERIAL.println(modWait->replacement);
-              // send replacement (append CRLF if none)
-              writeEscaped(MODEM_SERIAL, modWait->replacement, true);
-            } else {
-              DEBUG_SERIAL.println("[WARN] No OK received for command");
-            }
-          } else {
+
+              // send each command in the replacement separated by CR or LF
+              String rep = String(modWait->replacement);
+              size_t idx = 0;
+              while (idx < rep.length()) {
+                // find next separator (CR or LF)
+                int cr = rep.indexOf('\r', idx);
+                int nl = rep.indexOf('\n', idx);
+                int end = -1;
+                if (cr == -1) end = nl;
+                else if (nl == -1) end = cr;
+                else end = min(cr, nl);
+
+                String part;
+                if (end == -1) {
+                  part = rep.substring(idx);
+                  idx = rep.length();
+                } else {
+                  part = rep.substring(idx, end);
+                  idx = end + 1;
+                }
+                part.trim();
+                if (part.length() == 0) continue;
+
+                DEBUG_SERIAL.print("Sending part: ");
+                DEBUG_SERIAL.println(part);
+                writeEscaped(MODEM_SERIAL, part.c_str(), true);
+
+                if (modWait->waitForOK) {
+                  unsigned long s2 = millis();
+                  String r2 = "";
+                  bool ok2 = false;
+                  while (millis() - s2 < DETECT_TIMEOUT) {
+                    while (MODEM_SERIAL.available()) {
+                      char cc = MODEM_SERIAL.read();
+                      r2 += cc;
+                      HOST_SERIAL.write(cc);
+                      DEBUG_SERIAL.print(cc);
+                    }
+                    if (r2.indexOf("OK") >= 0) { ok2 = true; break; }
+                  }
+                  if (!ok2) {
+                    DEBUG_SERIAL.println("[WARN] No OK received for replacement part; aborting sequence.");
+                    break;
+                  }
+                } else {
+                  // small delay to let modem process if we don't wait for OK
+                  delay(50);
+                }
+              }
+             } else {
+               DEBUG_SERIAL.println("[WARN] No OK received for command");
+             }
+           } else {
             const char* mod = findModification(hostBuffer.c_str());
             const char* outCmd = mod ? mod : hostBuffer.c_str();
 
