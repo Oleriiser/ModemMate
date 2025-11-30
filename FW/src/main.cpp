@@ -4,7 +4,7 @@
 #define MODEM_SERIAL Serial2
 #define DEBUG_SERIAL Serial
 
-#define SERIAL_BAUD 115200
+#define SERIAL_BAUD 57600
 #define DETECT_TIMEOUT 3000
 //#define TERMINATOR ';'
 // ========== LED Pin Configuration ==========
@@ -73,11 +73,12 @@ const ATModification sim7600_mods[] = {
   
 };
 const ATModificationWithWait sim7600_mods_wait[] = {
-  {"ATZ", "AT+CNMI=2,2,0,0,0\nAT+CMGF=1\n", true}
+  {"ATZ", "AT+CNMI=2,2,0,0,0\n\rAT+CMGF=1\r", true}
 };
 
 const ATModification ec200_mods[] = {
-  {"AT+CREG", "AT+CREG?"}
+  {"AT+CREG", "AT+CREG?"},
+  {"AT+CPIN?","AT+CPIN?"}
 };
 
 const ATModificationWithWait ec200_mods_wait[] = {
@@ -127,11 +128,16 @@ const ATModificationWithWait* findModificationWithWait(const char* cmd) {
 }
 
 void forwardResponse() {
+  if(MODEM_SERIAL.available())
+  {
+    Serial.println("reply from modem:");
   while (MODEM_SERIAL.available()) {
     char b = MODEM_SERIAL.read();
     HOST_SERIAL.write(b);
     DEBUG_SERIAL.print(b);
+    delay(1);
   }
+}
 }
 
 // --- Wait for debug command response (blocking, no forward) ---
@@ -203,6 +209,7 @@ bool checkModemAlive() {
           ledGreen();
         } else {
           DEBUG_SERIAL.println("No profile matched during alive check; continuing without profile.");
+          activeProfile = 0;
           ledYellow();
         }
       }
@@ -345,6 +352,10 @@ void processDebugCommand(const String& msg) {
 
     case 'R':
       DEBUG_SERIAL.println("[CMD] Restarting...");
+      break;
+    case 'Z':
+      Serial2.write((char)0x1A);
+      break;
   #ifdef ESP32
       esp_restart();
   #elif defined(ARDUINO_ARCH_SAMD)
@@ -453,7 +464,10 @@ void loop() {
     // From Host → Modem
     while (HOST_SERIAL.available()) {
       char c = HOST_SERIAL.read();
-      if (c == '\r' || c == '\n') {
+      if (c == '\r' || c == '\n'||c==0x1A) {
+        if(c==0x1A){
+          hostBuffer += c;
+        }
         if (hostBuffer.length() > 0) {
           DEBUG_SERIAL.print("RX Host: ");
           DEBUG_SERIAL.println(hostBuffer);
